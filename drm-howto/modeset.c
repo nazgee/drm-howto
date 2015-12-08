@@ -632,7 +632,9 @@ static uint8_t next_color(bool *up, uint8_t cur, unsigned int mod)
 
 static void modeset_draw(void)
 {
+	uint8_t checkboardmask = 0x07;
 	uint8_t r, g, b;
+	uint8_t R, G, B;
 	bool r_up, g_up, b_up;
 	unsigned int i, j, k, off;
 	struct modeset_dev *iter;
@@ -649,16 +651,40 @@ static void modeset_draw(void)
 		b = next_color(&b_up, b, 5);
 
 		for (iter = modeset_list; iter; iter = iter->next) {
-			for (j = 0; j < iter->height; ++j) {
-				for (k = 0; k < iter->width; ++k) {
-					off = iter->stride * j + k * 4;
-					*(uint32_t*)&iter->map[off] =
-						     (r << 16) | (g << 8) | b;
+
+			for (int row = 0; row < iter->height; row++) {
+				for (int col = 0; col < iter->width; col++) {
+
+					uint8_t p = 0xff;
+					if ((col % 40 > 20 && row % 40 < 20)
+							|| (col % 40 < 20 && row % 40 > 20))
+						p = 0;
+
+					if (checkboardmask & 1) {
+						R = p ? p : r;
+					} else {
+						R = r;
+					}
+
+					if (checkboardmask & 2) {
+						G = p ? p : g;
+					} else {
+						G = g;
+					}
+
+					if (checkboardmask & 4) {
+						B = p ? p : b;
+					} else {
+						B = b;
+					}
+
+					off = iter->stride * row + col * 4;
+					*(uint32_t*) &iter->map[off] = (R << 16) | (G << 8) | B;
 				}
 			}
 		}
 
-		usleep(100000);
+		usleep(10000);
 	}
 }
 
