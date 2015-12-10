@@ -9,7 +9,6 @@
 //#include <epoxy/egl.h>
 //
 //
-
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -32,15 +31,25 @@
 #include "Exception.h"
 #include "Config.h"
 
-#define LOGVV(...) fprintf(stdout, __VA_ARGS__)
-#define LOGVD(...) fprintf(stdout, __VA_ARGS__)
-#define LOGVE(...) fprintf(stderr, __VA_ARGS__)
+#define LOGVV(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#define LOGVD(fmt, ...) fprintf(stdout, fmt "\n", ##__VA_ARGS__)
+#define LOGVE(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+
+class IUncopyable {
+public:
+    IUncopyable() {
+    }
+
+private:
+    IUncopyable(const IUncopyable&);
+    IUncopyable& operator=(const IUncopyable&);
+};
 
 //========================================================
-class DRM_Resources {
+class DRM_Resources: public IUncopyable {
     drmModeRes *res;
 public:
-    DRM_Resources(drmModeRes * res) :
+    DRM_Resources(drmModeRes *res) :
             res(res) {
         if (!res) {
             throw Exception("drmModeGetResources failed");
@@ -95,7 +104,7 @@ public:
     }
 };
 //========================================================
-class DRM_Encoder {
+class DRM_Encoder: public IUncopyable {
     drmModeEncoder *mEncoder;
 public:
     DRM_Encoder(drmModeEncoder *encoder) :
@@ -117,10 +126,11 @@ public:
 
 };
 //========================================================
-class DRM_Crtc {
+class DRM_Crtc: public IUncopyable {
+    uint32_t crtc_id;
 public:
-    DRM_Crtc() {
-
+    DRM_Crtc(uint32_t crtc_id) :
+            crtc_id(crtc_id) {
     }
 
     ~DRM_Crtc() {
@@ -129,24 +139,24 @@ public:
 };
 
 //========================================================
-class DRM_DumbBuffer {
+class DRM_DumbBuffer: public IUncopyable {
     drm_mode_create_dumb creq;
     int fd;
 
 public:
     DRM_DumbBuffer(int fd, uint32_t w, uint32_t h, uint8_t bpp) :
-        fd(fd) {
+            fd(fd) {
         memset(&creq, 0, sizeof(creq));
         creq.width = w;
         creq.height = h;
         creq.bpp = bpp;
         int ret = drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq);
         if (ret < 0) {
-            LOGVE("cannot create dumb buffer (%d): %m\n", errno);
+            LOGVE("cannot create dumb buffer (%d): %m", errno);
             throw Exception("cannot create dumb buffer:" + ret);
         }
 
-        LOGVD("allocated dumb buffer %dx%d@%dbpp; handle=%d\n", getWidth(), getHeight(), getBPP(), getHandle());
+        LOGVD("allocated dumb buffer %dx%d@%dbpp; handle=%d", getWidth(), getHeight(), getBPP(), getHandle());
     }
 
     ~DRM_DumbBuffer() {
@@ -187,7 +197,8 @@ public:
         }
 
         /* perform actual memory mapping */
-        map_result = (uint8_t*)mmap(0, getSize(), PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
+        map_result = (uint8_t*) mmap(0, getSize(), PROT_READ | PROT_WRITE,
+        MAP_SHARED, fd, mreq.offset);
         if (map_result == MAP_FAILED) {
             throw Exception("mapping dumb buffer failed:" + errno);
         }
@@ -223,7 +234,7 @@ public:
 
 };
 //========================================================
-class DRM_Connector {
+class DRM_Connector: public IUncopyable {
     bool mIsConnected;
     drmModeConnector *mConnector;
 public:
@@ -236,20 +247,24 @@ public:
 
         mIsConnected = mConnector->connection == DRM_MODE_CONNECTED;
         if (!isConnected()) {
-            LOGVE("connector %d is not connected\n", getId());
+            LOGVE("connector %d is not connected", getId());
             return;
         }
 
         if (getModesCount() <= 0) {
-            LOGVE("connector %d has no modes available\n", getId());
+            LOGVE("connector %d has no modes available", getId());
             return;
         }
 
-        LOGVD("connector %d max resolution is %dx%d\n", getId(), getWidth(), getHeight());
+        LOGVD("connector %d max resolution is %dx%d", getId(), getWidth(), getHeight());
     }
 
     ~DRM_Connector() {
         drmModeFreeConnector(mConnector);
+    }
+
+    uint32_t getType() {
+        return mConnector->connector_type;
     }
 
     uint32_t getId() {
@@ -300,83 +315,269 @@ public:
         }
         return NULL;
     }
-
-//     drmModeModeInfo mode;
-//     uint32_t fb;
-//     uint32_t conn;
-//     uint32_t crtc;
-//     drmModeCrtc *saved_crtc;
-//
-//     uint32_t width;
-//     uint32_t height;
-//     uint32_t stride;
-//     uint32_t size;
-//     uint32_t handle;
-//     uint8_t *map;
 };
 
 //========================================================
-struct devnode {
-     drmModeModeInfo mode;
-     uint32_t fb;
-     uint32_t conn;
-     uint32_t crtc;
-     drmModeCrtc *saved_crtc;
+class DeviceNode {
+public:
+    drmModeModeInfo mode;
+    uint32_t fb;
+    uint32_t conn;
+    uint32_t connector_type;
+    uint32_t crtc;
 
-     uint32_t width;
-     uint32_t height;
-     uint32_t stride;
-     uint32_t size;
-     uint32_t handle;
-     uint8_t *map;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t size;
+    uint32_t handle;
+    uint8_t *map;
 
-     devnode() :
-         fb(0), conn(0), crtc(0), saved_crtc(NULL), width(0), height(0), stride(0), size(0), handle(0), map(NULL)
-     {
-         memset(&mode, 0, sizeof(mode));
-     }
+    DeviceNode() :
+            fb(0), conn(0), crtc(0), width(0), height(0), stride(0), size(0), handle(0), map(NULL) {
+        memset(&mode, 0, sizeof(mode));
+    }
 
-     void dumpself() {
-         LOGVD("devnode: CRTC=%d conn=%d FB=%d, buffer: %dx%d@%dB handle=%d\n", crtc, conn, fb, width, height, size, handle);
-     }
+    void setBuffer(DRM_DumbBuffer &buffer) {
+        map = buffer.map();
+        size = buffer.getSize();
+        stride = buffer.getStride();
+        handle = buffer.getHandle();
+    }
+
+    void dumpself() {
+        LOGVD("devnode: CRTC=%d conn=%d FB=%d %dx%d, buffer: %dB handle=%d map=%p", crtc, conn, fb, width, height, size,
+                handle, map);
+    }
 };
 //========================================================
 class DRM {
     int fd;
-    std::vector<devnode> devices;
+    std::vector<DeviceNode> mAllocatedDevices;
 public:
     DRM(const char name[]) :
             fd(-1) {
-        LOGVD("opening DRM device\n");
+        LOGVD("opening DRM device");
         fd = drmOpen(name, NULL);
 
         if (!hasCap(DRM_CAP_DUMB_BUFFER)) {
             throw Exception("DRM_CAP_DUMB_BUFFER not available");
         }
 
-        prepare();
+        {
+            // create device
+            //DeviceNode device = findDeviceOnConnector(DRM_MODE_CONNECTOR_HDMIA);
+            DeviceNode device = findDeviceOnConnector(3);
+
+            // create data buffer
+            int bpp = 32;
+            DRM_DumbBuffer buffer(fd, device.width, device.height, bpp);
+
+            // create framebuffer
+            int ret = drmModeAddFB(fd, buffer.getWidth(), buffer.getHeight(), 24, bpp, buffer.getStride(),
+                    buffer.getHandle(), &device.fb);
+            if (ret) {
+                buffer.destroy();
+                throw Exception("drmModeAddFB failed for buffer:" + buffer.getHandle());
+            }
+
+            // register buffer in device
+            device.setBuffer(buffer);
+
+            // we're done
+            mAllocatedDevices.push_back(device);
+            device.dumpself();
+        }
+
+        {
+            DeviceNode device = mAllocatedDevices[0];
+            LOGVD("modesetting %d", device.conn);
+            device.dumpself();
+
+            drmModeCrtc *saved_crtc = drmModeGetCrtc(fd, device.crtc);
+            if (drmModeSetCrtc(fd, device.crtc, device.fb, 0, 0, &device.conn, 1, &device.mode)) {
+                LOGVE("cannot set CRTC for connector %u (%d): %m", device.conn, errno);
+                throw Exception("cannot set crtc for DeviceNode");
+            }
+            LOGVD("set CRTC for connector %u, starting draw()", device.conn);
+
+            draw();
+
+            // restore saved CRTC configuration
+            drmModeSetCrtc(fd, saved_crtc->crtc_id, saved_crtc->buffer_id, saved_crtc->x, saved_crtc->y, &device.conn,
+                    1, &saved_crtc->mode);
+            drmModeFreeCrtc(saved_crtc);
+
+//             /* unmap buffer */
+//             munmap(device.map, device.size);
+//
+//             /* delete framebuffer */
+//             drmModeRmFB(fd, device.fb);
+//
+//             /* delete dumb buffer */
+//             memset(&dreq, 0, sizeof(dreq));
+//             dreq.handle = iter->handle;
+//             drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+//
+//             /* free allocated memory */
+        }
+
+    }
+
+    void draw(void) {
+        uint8_t checkboardmask = 0x07;
+        uint8_t r, g, b;
+        uint8_t R, G, B;
+        bool r_up, g_up, b_up;
+        unsigned int i, j, k, off;
+        struct modeset_dev *iter;
+
+        srand(time(NULL));
+        r = rand() % 0xff;
+        g = rand() % 0xff;
+        b = rand() % 0xff;
+        r_up = g_up = b_up = true;
+
+        for (i = 0; i < 50; ++i) {
+            r = next_color(&r_up, r, 20);
+            g = next_color(&g_up, g, 10);
+            b = next_color(&b_up, b, 5);
+
+            for (unsigned int i = 0; i < mAllocatedDevices.size(); i++) {
+                DeviceNode device = mAllocatedDevices[i];
+                // TODO should use buffer's dimensions, not device
+                for (unsigned int row = 0; row < device.height; row++) {
+                    for (unsigned int col = 0; col < device.width; col++) {
+
+                        uint8_t p = 0xff;
+                        if ((col % 40 > 20 && row % 40 < 20) || (col % 40 < 20 && row % 40 > 20))
+                            p = 0;
+
+                        if (checkboardmask & 1) {
+                            R = p ? p : r;
+                        } else {
+                            R = r;
+                        }
+
+                        if (checkboardmask & 2) {
+                            G = p ? p : g;
+                        } else {
+                            G = g;
+                        }
+
+                        if (checkboardmask & 4) {
+                            B = p ? p : b;
+                        } else {
+                            B = b;
+                        }
+
+                        off = device.stride * row + col * 4;
+                        *(uint32_t*) &device.map[off] = (R << 16) | (G << 8) | B;
+                    }
+                }
+            }
+
+            usleep(10000);
+        }
+    }
+
+    uint8_t next_color(bool *up, uint8_t cur, unsigned int mod) {
+        uint8_t next;
+
+        next = cur + (*up ? 1 : -1) * (rand() % mod);
+        if ((*up && next < cur) || (!*up && next > cur)) {
+            *up = !*up;
+            next = cur;
+        }
+
+        return next;
     }
 
     ~DRM() {
-        LOGVD("closing DRM device\n");
+        LOGVD("closing DRM device");
         drmClose(fd);
     }
 
 private:
-    int32_t find_crtc_id(DRM_Connector& conn, DRM_Resources& res) {
+
+    bool hasCap(int capability) {
+        uint64_t has_capability = 0;
+        if (drmGetCap(fd, capability, &has_capability) < 0) {
+            throw Exception("drmGetCap failed unexpectedly");
+        }
+        return !!has_capability;
+    }
+
+    bool isAnyDeviceUsingCRTC(uint32_t crtc_id) {
+        for (int i = 0; i < mAllocatedDevices.size(); i++) {
+            if (mAllocatedDevices[i].crtc == crtc_id) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    DeviceNode findDeviceOnConnector(uint32_t connector_type) {
+        DeviceNode found_device;
+        DRM_Resources res(drmModeGetResources(fd));
+        for (unsigned int i = 0; i < res.getConnectorsCount(); ++i) {
+            DeviceNode tmp_device;
+            drmModeConnector *p_conn = drmModeGetConnector(fd, res.getConnectorId(i));
+            if (!p_conn) {
+                LOGVE("cannot retrieve DRM connector %u:%u (%d): %m", i, res.getConnectorId(i), errno);
+                continue;
+            }
+
+            // get mode info for this connector
+            DRM_Connector conn(p_conn);
+            if (!conn.isConnected()) {
+                LOGVD("nothing connected to connector %d - ignoring it", conn.getId());
+                continue;
+            }
+            tmp_device.connector_type = conn.getType();
+            tmp_device.conn = conn.getId();
+            tmp_device.mode = conn.getMode();
+            tmp_device.width = conn.getWidth();
+            tmp_device.height = conn.getHeight();
+
+            //find a CRTC for this connector
+            int32_t crtc_id = findFreeDeviceOnCRTC(conn, res);
+            if (crtc_id < 0) {
+                LOGVE("no valid CRTC for connector %d", conn.getId());
+                continue;
+            }
+            tmp_device.crtc = crtc_id;
+
+            tmp_device.dumpself();
+            if (tmp_device.connector_type == connector_type) {
+                found_device = tmp_device;
+                LOGVD("found device matching desired connector_type:%d", connector_type);
+                break;
+            } else {
+                LOGVD("still looking for connector_type:%d, got:%d", connector_type, tmp_device.connector_type);
+            }
+        }
+
+        return found_device;
+    }
+
+    int32_t findFreeDeviceOnCRTC(DRM_Connector& conn, DRM_Resources& res) {
         // try currently connected encoder+crtc
         drmModeEncoder* p_enc = conn.getCurrentEncoder(fd);
         if (p_enc) {
             DRM_Encoder enc(p_enc);
             uint32_t crtc = enc.getCrtcId();
             // TODO check if it should be '>' or '>='
-            if (crtc > 0 && !isDeviceUsingCRTC(crtc)) {
+            if (crtc > 0 && !isAnyDeviceUsingCRTC(crtc)) {
                 return crtc;
             }
         } else {
-            /* If the connector is not currently bound to an encoder or if the
-             * encoder+crtc is already used by another connector (actually unlikely
-             * but lets be safe), iterate all other available encoders to find a
+            /* If the connector is not currently bound to an encoder or if
+             the
+             * encoder+crtc is already used by another connector (actually
+             unlikely
+             * but lets be safe), iterate all other available encoders to
+             find a
              * matching CRTC. */
             for (unsigned int i = 0; i < conn.getEncodersCount(); ++i) {
                 p_enc = drmModeGetEncoder(fd, conn.getEncoderId(i));
@@ -391,89 +592,13 @@ private:
                         continue;
                     }
                     uint32_t crtc = res.getCrtcId(i);
-                    if (!isDeviceUsingCRTC(crtc)) {
+                    if (!isAnyDeviceUsingCRTC(crtc)) {
                         return crtc;
                     }
                 }
             }
         }
         return -1;
-    }
-
-    bool hasCap(int capability) {
-        uint64_t has_capability = 0;
-        if (drmGetCap(fd, capability, &has_capability) < 0) {
-            throw Exception("drmGetCap failed unexpectedly\n");
-        }
-        return !!has_capability;
-    }
-
-    bool isDeviceUsingCRTC(uint32_t crtc_id) {
-          // TODO
-//        crtc = enc->crtc_id;
-//        for (iter = modeset_list; iter; iter = iter->next) {
-//            if (iter->crtc == crtc) {
-//                crtc = -1;
-//                break;
-//            }
-//        }
-        return false;
-    }
-
-    void saveCRTC(uint32_t crtc_id) {
-        // TODO dev->crtc = crtc;
-    }
-
-    void prepare() {
-        DRM_Resources res(drmModeGetResources(fd));
-
-        for (unsigned int i = 0; i < res.getConnectorsCount(); ++i) {
-            struct devnode device;
-            drmModeConnector *p_conn = drmModeGetConnector(fd, res.getConnectorId(i));
-            if (!p_conn) {
-                LOGVE("cannot retrieve DRM connector %u:%u (%d): %m\n", i, res.getConnectorId(i), errno);
-                continue;
-            }
-
-            // get mode info for this connector
-            DRM_Connector conn(p_conn);
-            if (!conn.isConnected()) {
-                LOGVD("nothing connected to connector %d - ignoring it\n", conn.getId());
-                continue;
-            }
-            device.conn = conn.getId();
-            device.mode = conn.getMode();
-            device.width = conn.getWidth();
-            device.height = conn.getHeight();
-
-            //find a CRTC for this connector
-            int32_t crtc_id = find_crtc_id(conn, res);
-            if (crtc_id < 0) {
-                LOGVE("no valid CRTC for connector %d\n", conn.getId());
-                continue;
-            }
-            device.crtc = crtc_id;
-
-            // create data buffer
-            DRM_DumbBuffer buffer(fd, device.width, device.height, 32);
-            // create framebuffer
-            int ret = drmModeAddFB(fd, buffer.getWidth(), buffer.getHeight(), 24, buffer.getBPP(),
-                    buffer.getStride(), buffer.getHandle(), &device.fb);
-            if (ret) {
-                LOGVE("drmModeAddFB failed for buffer (%d)\n", buffer.getHandle());
-                buffer.destroy();
-                continue;
-            }
-            // save buffer info
-            device.map = buffer.map();
-            device.size = buffer.getSize();
-            device.stride = buffer.getStride();
-            device.handle = buffer.getHandle();
-
-            // store the device somewhere
-            LOGVD("device ready for use!\n");
-            device.dumpself();
-        }
     }
 };
 

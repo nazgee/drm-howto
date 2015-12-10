@@ -636,7 +636,7 @@ static void modeset_draw(void)
 	uint8_t r, g, b;
 	uint8_t R, G, B;
 	bool r_up, g_up, b_up;
-	unsigned int i, j, k, off;
+	unsigned int off;
 	struct modeset_dev *iter;
 
 	srand(time(NULL));
@@ -645,7 +645,7 @@ static void modeset_draw(void)
 	b = rand() % 0xff;
 	r_up = g_up = b_up = true;
 
-	for (i = 0; i < 50; ++i) {
+	for (int i = 0; i < 50; ++i) {
 		r = next_color(&r_up, r, 20);
 		g = next_color(&g_up, g, 10);
 		b = next_color(&b_up, b, 5);
